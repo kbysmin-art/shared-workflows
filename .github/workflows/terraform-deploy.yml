@@ -1,0 +1,112 @@
+name: Terraform Deploy (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: 'Directory containing the Terraform root module to run, e.g. "terraform/main".'
+        required: true
+        type: string
+      aws_region:
+        required: true
+        type: string
+      role_to_assume:
+        description: "ARN of the IAM role to assume via GitHub OIDC (see infra-modules//modules/github-oidc-role)."
+        required: true
+        type: string
+      backend_config_bucket:
+        required: false
+        type: string
+        default: ""
+      backend_config_key:
+        required: false
+        type: string
+        default: ""
+      backend_config_dynamodb_table:
+        required: false
+        type: string
+        default: ""
+      terraform_version:
+        required: false
+        type: string
+        default: "1.15.8"
+      pre_plan_command:
+        description: "Shell command run at the repo root before terraform init (e.g. building a Lambda zip)."
+        required: false
+        type: string
+        default: ""
+      tf_vars_json:
+        description: 'JSON object of non-secret Terraform variables, e.g. {"line_to_id": "U123..."}. Written to terraform.auto.tfvars.json, which Terraform loads automatically.'
+        required: false
+        type: string
+        default: "{}"
+      apply:
+        description: "Run terraform apply after plan. False = plan only (e.g. for pull requests)."
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      MODULES_GIT_TOKEN:
+        description: "Token with read access to the infra-modules repo, only needed while that repo is private."
+        required: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure git for private infra-modules access
+        env:
+          MODULES_GIT_TOKEN: ${{ secrets.MODULES_GIT_TOKEN }}
+        run: |
+          if [ -n "$MODULES_GIT_TOKEN" ]; then
+            git config --global url."https://x-access-token:${MODULES_GIT_TOKEN}@github.com/".insteadOf "https://github.com/"
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.role_to_assume }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Run pre-plan command
+        if: ${{ inputs.pre_plan_command != '' }}
+        working-directory: .
+        run: ${{ inputs.pre_plan_command }}
+
+      - name: Write tfvars
+        env:
+          TF_VARS_JSON: ${{ inputs.tf_vars_json }}
+        run: echo "$TF_VARS_JSON" > terraform.auto.tfvars.json
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            ${{ inputs.backend_config_bucket != '' && format('-backend-config=bucket={0}', inputs.backend_config_bucket) || '' }} \
+            ${{ inputs.backend_config_key != '' && format('-backend-config=key={0}', inputs.backend_config_key) || '' }} \
+            ${{ inputs.backend_config_dynamodb_table != '' && format('-backend-config=dynamodb_table={0}', inputs.backend_config_dynamodb_table) || '' }} \
+            -backend-config="region=${{ inputs.aws_region }}"
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: terraform plan -input=false -out=tfplan
+
+      - name: Terraform Apply
+        if: ${{ inputs.apply }}
+        run: terraform apply -input=false -auto-approve tfplan
