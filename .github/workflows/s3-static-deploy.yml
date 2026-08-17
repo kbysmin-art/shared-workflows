@@ -1,0 +1,91 @@
+name: S3 Static Site Deploy (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: 'Directory containing the static site app to build, e.g. "src".'
+        required: true
+        type: string
+      build_output_dir:
+        description: 'Directory (relative to working_directory) with the built static files to upload, e.g. "out".'
+        required: true
+        type: string
+      aws_region:
+        required: true
+        type: string
+      role_to_assume:
+        description: "ARN of the IAM role to assume via GitHub OIDC (see infra-modules//modules/github-oidc-role)."
+        required: true
+        type: string
+      s3_bucket:
+        description: "Destination bucket, e.g. from infra-modules//modules/static-site's bucket_name output."
+        required: true
+        type: string
+      cloudfront_distribution_id:
+        description: "If set, invalidates this distribution's cache after the sync."
+        required: false
+        type: string
+        default: ""
+      node_version:
+        required: false
+        type: string
+        default: "22"
+      install_command:
+        required: false
+        type: string
+        default: "npm ci"
+      build_command:
+        required: false
+        type: string
+        default: "npm run build"
+      build_env_json:
+        description: 'JSON object of env vars for the build step, e.g. {"NEXT_PUBLIC_SITE_URL": "https://d123.cloudfront.net"}.'
+        required: false
+        type: string
+        default: "{}"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.role_to_assume }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working_directory }}/package-lock.json
+
+      - name: Install dependencies
+        run: ${{ inputs.install_command }}
+
+      - name: Write build env
+        env:
+          BUILD_ENV_JSON: ${{ inputs.build_env_json }}
+        run: echo "$BUILD_ENV_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
+
+      - name: Build
+        run: ${{ inputs.build_command }}
+
+      - name: Sync to S3
+        run: aws s3 sync "${{ inputs.build_output_dir }}" "s3://${{ inputs.s3_bucket }}" --delete
+
+      - name: Invalidate CloudFront cache
+        if: ${{ inputs.cloudfront_distribution_id != '' }}
+        run: aws cloudfront create-invalidation --distribution-id "${{ inputs.cloudfront_distribution_id }}" --paths "/*"
