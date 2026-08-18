@@ -91,7 +91,9 @@ jobs:
       - name: Write tfvars
         env:
           TF_VARS_JSON: ${{ inputs.tf_vars_json }}
-        run: echo "$TF_VARS_JSON" > terraform.auto.tfvars.json
+        run: |
+          echo "tf_vars_json length=${#TF_VARS_JSON}"
+          echo "$TF_VARS_JSON" > terraform.auto.tfvars.json
 
       - name: Terraform Init
         run: |
