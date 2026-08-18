@@ -49,6 +49,9 @@ on:
       MODULES_GIT_TOKEN:
         description: "Token with read access to the infra-modules repo, only needed while that repo is private."
         required: false
+      secret_tf_vars_json:
+        description: 'JSON object of Terraform variables that contain secrets, e.g. {"basic_auth_password": "..."}. Written to secret.auto.tfvars.json (Terraform loads every *.auto.tfvars.json automatically). Kept separate from the tf_vars_json input because the with: keyword on a reusable-workflow-call job cannot reference the secrets context — callers must build this value inside their own secrets: mapping instead, where secrets *is* accessible. Also: a value built from secrets and only passed through a job''s outputs (rather than directly into secrets:) comes back empty — GitHub Actions blanks job outputs that contain secret values.'
+        required: false
 
 permissions:
   id-token: write
@@ -91,9 +94,12 @@ jobs:
       - name: Write tfvars
         env:
           TF_VARS_JSON: ${{ inputs.tf_vars_json }}
+          SECRET_TF_VARS_JSON: ${{ secrets.secret_tf_vars_json }}
         run: |
-          echo "tf_vars_json length=${#TF_VARS_JSON}"
           echo "$TF_VARS_JSON" > terraform.auto.tfvars.json
+          if [ -n "$SECRET_TF_VARS_JSON" ]; then
+            echo "$SECRET_TF_VARS_JSON" > secret.auto.tfvars.json
+          fi
 
       - name: Terraform Init
         run: |
