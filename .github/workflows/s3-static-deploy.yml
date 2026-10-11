@@ -44,6 +44,10 @@ on:
         required: false
         type: string
         default: "{}"
+    secrets:
+      build_secrets_json:
+        description: 'JSON object of secret env vars for the build step only, e.g. {"MICROCMS_API_KEY": "..."} for a headless CMS read at build time. Values are masked in logs. Kept separate from build_env_json because the with: keyword on a reusable-workflow-call job cannot reference the secrets context — callers build this inside their own secrets: mapping instead (see terraform-deploy.yml''s secret_tf_vars_json). Empty-string values are skipped, so a caller can pass optional secrets unconditionally.'
+        required: false
 
 permissions:
   id-token: write
@@ -81,7 +85,18 @@ jobs:
         run: echo "$BUILD_ENV_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
 
       - name: Build
-        run: ${{ inputs.build_command }}
+        env:
+          BUILD_SECRETS_JSON: ${{ secrets.build_secrets_json }}
+        run: |
+          # Secrets are exported to this step only (not $GITHUB_ENV), so the
+          # sync/invalidate steps below never see them.
+          if [ -n "$BUILD_SECRETS_JSON" ]; then
+            while IFS= read -r line; do
+              [ -n "$line" ] && export "$line"
+            done < <(echo "$BUILD_SECRETS_JSON" | jq -r 'to_entries[] | select(.value != "") | "\(.key)=\(.value)"')
+          fi
+          unset BUILD_SECRETS_JSON
+          ${{ inputs.build_command }}
 
       - name: Sync to S3
         run: aws s3 sync "${{ inputs.build_output_dir }}" "s3://${{ inputs.s3_bucket }}" --delete
